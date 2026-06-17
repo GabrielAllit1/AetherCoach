@@ -1,0 +1,13 @@
+customtkinter>=5.2.2
+Pillow>=10.4.0
+ollama>=0.3.3
+pyautogui>=0.9.54
+mss>=9.0.1
+pytesseract>=0.3.13
+opencv-python>=4.10.0.84
+numpy>=1.26.4
+SpeechRecognition>=3.10.4
+pyaudio>=0.2.14; platform_system != 'Windows'
+pyperclip>=1.9.0
+keyboard>=0.13.5
+pyinstaller>=6.10.0
