@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-import platform
 import queue
 import shutil
-import subprocess
-import sys
 import threading
-import time
+import webbrowser
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -20,21 +17,17 @@ import cv2
 import mss
 import numpy as np
 import ollama
-import pyautogui
 import pyperclip
 import pytesseract
 from PIL import Image, ImageTk
 
-try:
-    import speech_recognition as sr
-except Exception:  # optional runtime feature
-    sr = None
-
 APP_NAME = "Aether Coach"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 DATA_DIR = Path.home() / ".aether_coach"
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(mode=0o700, exist_ok=True)
 CONFIG_PATH = DATA_DIR / "config.json"
+SUPPORT_URL = "https://buymeacoffee.com/salt19"
+PORTFOLIO_URL = "https://salt19.com/founder"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "model": "llama3.2:latest",
@@ -45,7 +38,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_context_chars": 2400,
     "privacy_redaction": True,
     "always_on_top": False,
-    "transparent_overlay": False,
     "ollama_host": "http://localhost:11434",
 }
 
@@ -80,15 +72,44 @@ def load_config() -> dict[str, Any]:
         try:
             with CONFIG_PATH.open("r", encoding="utf-8") as f:
                 loaded = json.load(f)
-            return {**DEFAULT_CONFIG, **loaded}
+            return normalize_config(loaded)
         except Exception:
             return DEFAULT_CONFIG.copy()
     return DEFAULT_CONFIG.copy()
 
 
 def save_config(config: dict[str, Any]) -> None:
-    with CONFIG_PATH.open("w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
+    normalized = normalize_config(config)
+    temporary_path = CONFIG_PATH.with_suffix(".tmp")
+    with temporary_path.open("w", encoding="utf-8") as f:
+        json.dump(normalized, f, indent=2)
+    if os.name != "nt":
+        temporary_path.chmod(0o600)
+    temporary_path.replace(CONFIG_PATH)
+
+
+def normalize_config(loaded: Any) -> dict[str, Any]:
+    if not isinstance(loaded, dict):
+        return DEFAULT_CONFIG.copy()
+    normalized = DEFAULT_CONFIG.copy()
+    if loaded.get("model") and isinstance(loaded["model"], str):
+        normalized["model"] = loaded["model"].strip()[:160]
+    if loaded.get("style") in STYLE_PROMPTS:
+        normalized["style"] = loaded["style"]
+    for key, low, high in (("interval_seconds", 2.0, 60.0), ("ocr_min_chars", 20, 500), ("max_context_chars", 200, 8000)):
+        try:
+            normalized[key] = max(low, min(high, float(loaded.get(key, normalized[key]))))
+        except (TypeError, ValueError):
+            pass
+    try:
+        normalized["monitor_index"] = max(1, int(loaded.get("monitor_index", 1)))
+    except (TypeError, ValueError):
+        pass
+    normalized["privacy_redaction"] = bool(loaded.get("privacy_redaction", True))
+    normalized["always_on_top"] = bool(loaded.get("always_on_top", False))
+    # AetherCoach's privacy claim depends on OCR content never leaving loopback.
+    normalized["ollama_host"] = "http://localhost:11434"
+    return normalized
 
 
 def detect_tesseract() -> Optional[str]:
@@ -146,6 +167,7 @@ class AetherCoach(ctk.CTk):
         self.preview_ref: Optional[ImageTk.PhotoImage] = None
         self.available_models: list[str] = [self.config["model"]]
         self.last_ocr_hash: Optional[int] = None
+        self.capture_lock = threading.Lock()
 
         tesseract_path = detect_tesseract()
         if tesseract_path:
@@ -195,6 +217,8 @@ class AetherCoach(ctk.CTk):
         ctk.CTkButton(sidebar, text="Copy Latest Feedback", command=self.copy_latest_feedback).pack(pady=6, padx=25, fill="x")
         ctk.CTkButton(sidebar, text="Clear Log", command=self.clear_log).pack(pady=6, padx=25, fill="x")
         ctk.CTkButton(sidebar, text="Export JSON Session", command=self.export_log).pack(pady=6, padx=25, fill="x")
+        ctk.CTkButton(sidebar, text="Support Free Development", fg_color="#ffdd00", text_color="#111111", hover_color="#e5c700", command=lambda: self.open_external(SUPPORT_URL)).pack(pady=(18, 6), padx=25, fill="x")
+        ctk.CTkButton(sidebar, text="Explore SALT19", fg_color="#25344a", command=lambda: self.open_external(PORTFOLIO_URL)).pack(pady=6, padx=25, fill="x")
 
         ctk.CTkSwitch(sidebar, text="Redact emails/cards/SSNs", variable=self.privacy_var, command=self.persist_settings).pack(anchor="w", padx=25, pady=(20, 4))
         ctk.CTkSwitch(sidebar, text="Always on top", variable=self.top_var, command=self.toggle_topmost).pack(anchor="w", padx=25, pady=4)
@@ -315,6 +339,7 @@ class AetherCoach(ctk.CTk):
         self.status_badge.configure(text="Paused" if self.is_paused else "Monitoring")
 
     def manual_analyze(self) -> None:
+        self.persist_settings()
         threading.Thread(target=self.capture_analyze_once, daemon=True).start()
 
     def monitor_loop(self) -> None:
@@ -324,11 +349,14 @@ class AetherCoach(ctk.CTk):
             self.stop_event.wait(float(self.config["interval_seconds"]))
 
     def capture_analyze_once(self) -> None:
+        if not self.capture_lock.acquire(blocking=False):
+            self.queue_status("Analysis already running; skipped overlapping request.", warn=True)
+            return
         try:
             image = self.capture_screen()
             self.update_preview_async(image)
             text = self.extract_text(image)
-            if self.privacy_var.get():
+            if bool(self.config["privacy_redaction"]):
                 text = redact_sensitive(text)
             compact = " ".join(text.split())
             if len(compact) < int(self.config["ocr_min_chars"]):
@@ -339,18 +367,22 @@ class AetherCoach(ctk.CTk):
                 self.queue_status("Context unchanged; skipped duplicate LLM call.")
                 return
             self.last_ocr_hash = h
-            feedback = self.get_ai_feedback(compact[: int(self.config["max_context_chars"])])
+            style = str(self.config["style"])
+            model = str(self.config["model"])
+            feedback = self.get_ai_feedback(compact[: int(self.config["max_context_chars"])], style, model)
             self.feedback_queue.put(feedback)
             self.session_log.append(SessionEntry(
                 timestamp=datetime.now().isoformat(timespec="seconds"),
-                style=self.style_var.get(),
-                model=self.model_var.get(),
+                style=style,
+                model=model,
                 context_excerpt=compact[:500],
                 feedback=feedback,
                 ocr_chars=len(compact),
             ))
         except Exception as exc:
-            self.feedback_queue.put(f"Capture/analyze error: {exc}")
+            self.feedback_queue.put(f"Capture/analyze error: {type(exc).__name__}. Check the status bar and local setup.")
+        finally:
+            self.capture_lock.release()
 
     def capture_screen(self) -> Image.Image:
         with mss.mss() as sct:
@@ -374,8 +406,7 @@ class AetherCoach(ctk.CTk):
         custom_config = "--oem 3 --psm 6"
         return pytesseract.image_to_string(processed, config=custom_config).strip()
 
-    def get_ai_feedback(self, screen_text: str) -> str:
-        style = self.style_var.get()
+    def get_ai_feedback(self, screen_text: str, style: str, model: str) -> str:
         style_instruction = STYLE_PROMPTS.get(style, STYLE_PROMPTS["Direct Feedback"])
         prompt = f"""You are Aether Coach, a private real-time local AI coach running on the user's own machine.
 
@@ -394,7 +425,7 @@ Do not mention OCR unless text is unreadable. Do not claim to see images beyond 
         try:
             client = ollama.Client(host=self.config["ollama_host"])
             response = client.chat(
-                model=self.model_var.get(),
+                model=model,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0.35, "num_ctx": 4096},
             )
@@ -421,7 +452,13 @@ Do not mention OCR unless text is unreadable. Do not claim to see images beyond 
 
     def clear_log(self) -> None:
         self.feedback_text.delete("1.0", "end")
+        self.session_log.clear()
+        self.last_ocr_hash = None
         self.log("Feedback log cleared.", "System")
+
+    def open_external(self, url: str) -> None:
+        webbrowser.open_new_tab(url)
+        self.queue_status("Opened trusted SALT19 link in your browser.")
 
     def export_log(self) -> None:
         if not self.session_log:
@@ -442,10 +479,5 @@ Do not mention OCR unless text is unreadable. Do not claim to see images beyond 
 
 
 if __name__ == "__main__":
-    if platform.system() == "Windows":
-        try:
-            pyautogui.FAILSAFE = True
-        except Exception:
-            pass
     app = AetherCoach()
     app.mainloop()
