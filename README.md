@@ -1,5 +1,7 @@
 # AetherCoach
 
+[![Quality](https://github.com/GabrielAllit1/AetherCoach/actions/workflows/quality.yml/badge.svg)](https://github.com/GabrielAllit1/AetherCoach/actions/workflows/quality.yml)
+
 A local-first desktop coaching assistant that combines screen capture, OCR, and a locally hosted Ollama model to provide short, contextual feedback without sending screen content to a SALT19 cloud service.
 
 > **Status:** Active public prototype, v1.1.0. Review the privacy notes and known limitations before use.
