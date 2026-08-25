@@ -1,0 +1,2 @@
+-r aether_coach/requirements.txt
+pytest>=8.3,<9
