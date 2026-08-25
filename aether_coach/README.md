@@ -1,6 +1,6 @@
 # Aether Coach
 
-Private real-time AI personal coach desktop app powered by local Ollama, screen capture, and OCR.
+Private real-time AI personal coach desktop app powered by loopback-only Ollama, screen capture, and OCR.
 
 ## What it does
 
@@ -11,7 +11,7 @@ Private real-time AI personal coach desktop app powered by local Ollama, screen 
 - Supports interview prep, study, meeting, sales, direct feedback, and confidence modes
 - Exports session history as JSON
 
-No cloud API is used by this app. Ollama must run locally.
+No cloud API is used by this app. Ollama must run locally, and the application rejects non-loopback model destinations.
 
 ## Install
 
@@ -91,4 +91,8 @@ Aether Coach runs locally, but screen OCR can still capture sensitive visible te
 
 - OCR quality depends on screen resolution, font size, contrast, and window scaling.
 - The model only receives extracted text, not raw visual reasoning.
-- PyAudio installation can require OS audio build tools. Microphone input is included as a dependency path but not enabled in v1 UI.
+- Voice input is not part of the current product surface.
+
+## Support
+
+Use the in-app **Support Free Development** button or visit https://buymeacoffee.com/salt19. Support is optional; the core application remains free and local-first.
