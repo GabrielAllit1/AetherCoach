@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+*.spec
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+aether_session_*.json
+.aether_coach/
